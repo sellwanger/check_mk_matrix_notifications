@@ -22,7 +22,6 @@
 # CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
 # OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
 import json
 import os
 import random
@@ -30,65 +29,87 @@ import string
 import sys
 import requests
 
-MATRIXHOST = os.environ["NOTIFY_PARAMETER_1"]
-MATRIXTOKEN = os.environ["NOTIFY_PARAMETER_2"]
-MATRIXROOM = os.environ["NOTIFY_PARAMETER_3"]
+# Hilfsfunktion: sichere Umgebungsvariablenabfrage
+def safe_get(env, default=""):
+    return os.environ.get(env, default)
 
+# Konfig aus Umgebungsvariablen
+MATRIXHOST = safe_get("NOTIFY_PARAMETER_1")  # z.B. "https://matrix.example.com"
+MATRIXTOKEN = safe_get("NOTIFY_PARAMETER_2")  # Zugangstoken
+MATRIXROOM = safe_get("NOTIFY_PARAMETER_3")  # Raum-ID (z.B. !abcdefg1234:example.com)
+
+
+# Benachrichtigungsdaten
 data = {
-    "TS": os.environ["NOTIFY_SHORTDATETIME"],
-
-    # Host related info.
-    "HOST": os.environ["NOTIFY_HOSTNAME"],
-    "HOSTADDR": os.environ["NOTIFY_HOSTADDRESS"],
-    "HOSTSTATE": os.environ["NOTIFY_HOSTSTATE"],
-    "HOSTSTATEPREVIOUS": os.environ["NOTIFY_LASTHOSTSTATE"],
-    "HOSTSTATECOUNT": os.environ["NOTIFY_HOSTNOTIFICATIONNUMBER"],
-    "HOSTOUTPUT": os.environ["NOTIFY_HOSTOUTPUT"],
-
-    # Service related info.
-    "SERVICE": os.environ["NOTIFY_SERVICEDESC"],
-    "SERVICESTATE": os.environ["NOTIFY_SERVICESTATE"],
-    "SERVICESTATEPREVIOUS": os.environ["NOTIFY_LASTSERVICESTATE"],
-    "SERVICESTATECOUNT": os.environ["NOTIFY_SERVICENOTIFICATIONNUMBER"],
-    "SERVICEOUTPUT": os.environ["NOTIFY_SERVICEOUTPUT"]
+    "TS": safe_get("NOTIFY_SHORTDATETIME"),
+    "HOST": safe_get("NOTIFY_HOSTNAME"),
+    "HOSTADDR": safe_get("NOTIFY_HOSTADDRESS"),
+    "HOSTSTATE": safe_get("NOTIFY_HOSTSTATE"),
+    "HOSTSTATEPREVIOUS": safe_get("NOTIFY_LASTHOSTSTATE"),
+    "HOSTSTATECOUNT": safe_get("NOTIFY_HOSTNOTIFICATIONNUMBER"),
+    "HOSTOUTPUT": safe_get("NOTIFY_HOSTOUTPUT"),
+    "SERVICE": safe_get("NOTIFY_SERVICEDESC"),
+    "SERVICESTATE": safe_get("NOTIFY_SERVICESTATE"),
+    "SERVICESTATEPREVIOUS": safe_get("NOTIFY_LASTSERVICESTATE"),
+    "SERVICESTATECOUNT": safe_get("NOTIFY_SERVICENOTIFICATIONNUMBER"),
+    "SERVICEOUTPUT": safe_get("NOTIFY_SERVICEOUTPUT"),
 }
 
-servicemessage = '''Service <b>{SERVICE}</b> at <b>{HOST}</b> ({HOSTADDR}) | TS: {TS} | STATE: <b>{SERVICESTATE}</b>
-<br>{SERVICEOUTPUT}<br>'''
+servicemessage = (
+    'Service <b>{SERVICE}</b> at <b>{HOST}</b> ({HOSTADDR}) | TS: {TS} | '
+    'STATE: <b>{SERVICESTATE}</b><br>{SERVICEOUTPUT}<br>'
+)
 
-hostmessage = '''Host <b>{HOST}</b> ({HOSTADDR}) | TS: {TS} | STATE: <b>{HOSTSTATE}</b>
-<br>{HOSTOUTPUT}<br>'''
+hostmessage = (
+    'Host <b>{HOST}</b> ({HOSTADDR}) | TS: {TS} | STATE: <b>{HOSTSTATE}</b><br>{HOSTOUTPUT}<br>'
+)
 
+# Nachricht zusammensetzen
 message = ""
 
-print(data)
-
-# Checking host status first.
-if (data["HOSTSTATE"] != data["HOSTSTATEPREVIOUS"] or data["HOSTSTATECOUNT"] != "0"):
+# Hostzustand prüfen
+if data["HOSTSTATE"] != data["HOSTSTATEPREVIOUS"] or data["HOSTSTATECOUNT"] != "0":
     message = hostmessage.format(**data)
 
-# Check service state.
-# We're replacing it because host state notifications flows in separately
-# from service state notifications and we have no need in host state here.
-if (data["SERVICESTATE"] != data["SERVICESTATEPREVIOUS"] or data["SERVICESTATECOUNT"] != "0") and (data["SERVICE"] != "$SERVICEDESC$"):
+# Servicestatus prüfen
+if (
+    data["SERVICESTATE"] != data["SERVICESTATEPREVIOUS"]
+    or data["SERVICESTATECOUNT"] != "0"
+) and data["SERVICE"] not in ["", "$SERVICEDESC$"]:
     message = servicemessage.format(**data)
 
-# Data we will send to Matrix Homeserver.
-matrixDataDict = {
+# Falls keine Nachricht nötig ist, Skript beenden
+if not message:
+    print("No message to send.")
+    sys.exit(0)
+
+# Matrix-Nachricht
+matrix_data = {
     "msgtype": "m.text",
     "body": message,
     "format": "org.matrix.custom.html",
     "formatted_body": message,
 }
-matrixData = json.dumps(matrixDataDict)
-matrixData = matrixData.encode("utf-8")
+matrix_json = json.dumps(matrix_data).encode("utf-8")
 
-# Random transaction ID for Matrix Homeserver.
-txnId = ''.join(random.SystemRandom().choice(
-    string.ascii_uppercase + string.digits) for _ in range(16))
-# Authorization headers and etc.
-matrixHeaders = {"Authorization": "Bearer " + MATRIXTOKEN,
-                 "Content-Type": "application/json", "Content-Length": str(len(matrixData))}
-# Request.
-req = requests.put(url=MATRIXHOST + "/_matrix/client/r0/rooms/" + MATRIXROOM +
-                             "/send/m.room.message/" + txnId, data=matrixData, headers=matrixHeaders)
+# Zufällige txn ID generieren
+txn_id = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+
+# Headers
+headers = {
+    "Authorization": f"Bearer {MATRIXTOKEN}",
+    "Content-Type": "application/json"
+}
+
+# Endpunkt (v3 statt r0 empfohlen)
+url = f"{MATRIXHOST}/_matrix/client/v3/rooms/{MATRIXROOM}/send/m.room.message/{txn_id}"
+
+# Matrix-Nachricht senden
+try:
+    response = requests.put(url, data=matrix_json, headers=headers)
+    response.raise_for_status()
+    print(f"Message sent successfully. Status code: {response.status_code}")
+except requests.RequestException as e:
+    print(f"Failed to send message: {e}")
+    print(f"Response: {getattr(e.response, 'text', 'No response body')}")
+    sys.exit(2)
